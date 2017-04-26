@@ -2102,6 +2102,155 @@ static int lua_string_json(lua_State* L)
 }
 
 //////////////////////////////////////////////////////////////////////////
+static int lua_string_base64encode(lua_State* L)
+{
+	size_t len = 0;
+	std::string strout;
+	const char* src = luaL_checklstring(L, 1, &len);
+
+	len = Base64Encode(src, len, strout);
+	lua_pushlstring(L, strout.c_str(), len);
+
+	return 1;
+}
+
+static int lua_string_base64decode(lua_State* L)
+{
+	size_t len = 0;
+	std::string strout;
+	const char* src = luaL_checklstring(L, 1, &len);
+
+	len = Base64Decode(src, len, strout);
+	lua_pushlstring(L, strout.data(), len);
+
+	return 1;
+}
+
+static int lua_string_urlencode(lua_State* L)
+{
+	size_t len = 0;
+	std::string strout;
+	const char* src = luaL_checklstring(L, 1, &len);
+
+	urlEncode(src, len, strout);
+
+	lua_pushlstring(L, strout.c_str(), strout.length());
+	return 1;
+}
+
+static int lua_string_urldecode(lua_State* L)
+{
+	char* src;
+	size_t len = 0;
+	char fixedBuf[512];
+	std::string strSource;
+	const char* str = luaL_checklstring(L, 1, &len);
+
+	if (len <= 512)
+	{
+		memcpy(fixedBuf, str, len);
+		src = fixedBuf;
+	}
+	else
+	{
+		strSource.append(str, len);
+		src = const_cast<char*>(strSource.data());
+	}
+
+	len = urlDecode(src, len);
+
+	lua_pushlstring(L, src, len);
+	return 1;
+}
+
+static int lua_string_hexdump(lua_State* L)
+{
+	uint8_t* dst;
+	size_t len = 0;
+	char fixedBuf[512];
+	std::string strout;
+	const uint8_t* src = (const uint8_t*)luaL_checklstring(L, 1, &len);
+	static const uint8_t converts[] = { "0123456789ABCDEF" };
+
+	if (len <= 256)
+	{
+		dst = (uint8_t*)fixedBuf;
+	}
+	else
+	{
+		strout.resize(len << 1);
+		dst = (uint8_t*)const_cast<char*>(strout.data());
+	}
+
+	for(size_t i = 0; i < len; ++ i)
+	{
+		dst[0] = converts[(src[i] >> 4) & 0xF];
+		dst[1] = converts[src[i] & 0xF];
+		dst += 2;
+	}
+
+	if (len <= 256)
+		lua_pushlstring(L, fixedBuf, len << 1);
+	else
+		lua_pushlstring(L, strout.data(), len << 1);
+	return 1;
+}
+
+//////////////////////////////////////////////////////////////////////////
+#ifdef USE_RE2
+typedef MAP_CLASS_NAME<std::string, re2::RE2*> RE2PatsMap;
+static RE2PatsMap re2pats;
+
+static int lua_string_re2clear(lua_State* L)
+{
+	for (RE2PatsMap::iterator ite = re2pats.begin(), iend = re2pats.end(); ite != iend; ++ ite)
+	{
+		re2::RE2* p = ite->second;
+		delete p;
+	}
+
+	return 0;
+}
+
+static int lua_string_re2match(lua_State* L)
+{		
+	std::string str;
+	re2::RE2* cache = NULL;
+	bool bFullMatch = true, bMatched = false;
+	size_t srclen = 0, patlen = 0, optslen = 0;
+	const char* src = luaL_checklstring(L, 1, &srclen);
+	const char* pat = luaL_checklstring(L, 2, &patlen);
+	const char* opts = lua_tolstring(L, 3, &optslen);
+
+	while (optslen -- > 0)
+	{
+		switch (opts[optslen])
+		{
+		case 'c':	// 缓存RE2
+		{
+			str.append(pat, patlen);
+			RE2PatsMap::iterator ite = re2pats.find(str);
+			if (ite == re2pats.end())
+			{
+				cache = new re2::RE2(re2::StringPiece(pat, patlen));
+				re2pats.insert(RE2PatsMap::value_type(str, cache));
+			}
+			else
+				cache = ite->second;
+		}
+			break;
+
+		case 'p':	// 部分匹配
+			bFullMatch = false;
+			break;
+		}
+	}	
+
+	return 0;
+}
+#endif
+
+//////////////////////////////////////////////////////////////////////////
 static void luaext_string(lua_State *L)
 {
 	const luaL_Reg procs[] = {
@@ -2154,6 +2303,17 @@ static void luaext_string(lua_State *L)
 		// Json解码（dec时2~4倍性能于ngx所采用的cjson，enc时随table的复杂度1.5~4.5倍性能于cjson，不过这不是关键，关键是本json encode支持boxed 64bit integer以及cdata自动编码为base64等本库才有的扩展能力）
 		{ "json", &lua_string_json },
 
+		// Base64编码解码
+		{ "base64encode", &lua_string_base64encode },
+		{ "base64decode", &lua_string_base64decode },
+
+		// URL编码解码
+		{ "urlencode", &lua_string_urlencode },
+		{ "urldecode", &lua_string_urldecode },
+
+		// Hex转换
+		{ "hexdump", &lua_string_hexdump },
+
 		{ NULL, NULL }
 	};
 
@@ -2161,11 +2321,11 @@ static void luaext_string(lua_State *L)
 	lua_getglobal(L, "string");
 
 	// 字符串切分时可用的标志位
-	lua_pushliteral(L, "SPLIT_ASKEY");		// 用切出来的值做为key
+	lua_pushliteral(L, "SPLIT_ASKEY");				// 用切出来的值做为key
 	lua_pushinteger(L, kSplitAsKey);
 	lua_rawset(L, -3);
 
-	lua_pushliteral(L, "SPLIT_TRIM");		// 每一个切出来的值先做左右trim
+	lua_pushliteral(L, "SPLIT_TRIM");				// 每一个切出来的值先做左右trim
 	lua_pushinteger(L, kSplitTrim);
 	lua_rawset(L, -3);
 

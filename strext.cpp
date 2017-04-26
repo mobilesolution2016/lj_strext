@@ -11,6 +11,15 @@
 #include <algorithm>
 #include <limits>
 
+#define USE_RE2
+#ifdef USE_RE2
+#	include <re2/re2.h>
+#	include <re2/set.h>
+#endif
+
+#include "gbk2unicode.c"
+#include "unicode2gbk.c"
+
 #ifdef _WINDOWS
 #include <boost/unordered_map.hpp>
 #define MAP_CLASS_NAME boost::unordered_map
@@ -73,7 +82,7 @@ union double2int
 {
 	double	dval;
 	int32_t	i32;
-} ;
+};
 
 static inline int32_t dtoi(double val)
 {
@@ -325,7 +334,7 @@ public:
 
 	inline T* next() const { return static_cast<T*>(m_pNext); }
 	inline T* previous() const { return static_cast<T*>(m_pPrevious); }
-} ;
+};
 
 template <typename T> class TList
 {
@@ -394,7 +403,7 @@ public:
 		m_nodesCount += list.size();
 
 		Node* n = list.m_pFirstNode, *nn;
-		while(n)
+		while (n)
 		{
 			nn = n->m_pNext;
 
@@ -575,7 +584,7 @@ public:
 	~TMemList()
 	{
 		TMemNode* n;
-		while((n = popFirst()) != 0)
+		while ((n = popFirst()) != 0)
 			free(n);
 	}
 
@@ -686,7 +695,500 @@ public:
 			*pnTotal = total;
 		return dst;
 	}
-} ;
+};
+
+//////////////////////////////////////////////////////////////////////////
+// 从双字中取单字节
+#define B0(a) (a & 0xFF)
+#define B1(a) (a >> 8 & 0xFF)
+#define B2(a) (a >> 16 & 0xFF)
+#define B3(a) (a >> 24 & 0xFF)
+
+static inline char GetB64Char(int32_t index)
+{
+	const char szBase64Table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	if (index >= 0 && index < 64)
+		return szBase64Table[index];
+
+	return '=';
+}
+
+static uint8_t B64Indices[128] = { 0 };
+struct B64IndexInit
+{
+	B64IndexInit()
+	{
+		for (uint8_t ch = 0; ch < 128; ++ ch)
+		{
+			if (ch >= 'A' && ch <= 'Z')
+				B64Indices[ch] = ch - 'A';
+			else if (ch >= 'a' && ch <= 'z')
+				B64Indices[ch] = ch - 'a' + 26;
+			else if (ch >= '0' && ch <= '9')
+				B64Indices[ch] = ch - '0' + 52;
+			else if (ch == '+')
+				B64Indices[ch] = 62;
+			else if (ch == '/')
+				B64Indices[ch] = 63;
+		}
+	}
+} _g_B64IndexInit;
+
+// 编码后的长度一般比原文多占1/3的存储空间，请保证base64code有足够的空间
+size_t Base64Encode(const void* src, size_t src_len, std::string& buf)
+{
+	size_t i, len = 0, begin = buf.length();
+	unsigned char* psrc = (unsigned char*)src;
+
+	buf.resize(begin + src_len + (src_len >> 1));
+	char* p64 = const_cast<char*>(buf.c_str()) + begin;
+
+	for (i = 0; src_len > 3 && i < src_len - 3; i += 3)
+	{
+		unsigned ulTmp = *(unsigned*)psrc;
+		int32_t b0 = GetB64Char((B0(ulTmp) >> 2) & 0x3F);
+		int32_t b1 = GetB64Char((B0(ulTmp) << 6 >> 2 | B1(ulTmp) >> 4) & 0x3F);
+		int32_t b2 = GetB64Char((B1(ulTmp) << 4 >> 2 | B2(ulTmp) >> 6) & 0x3F);
+		int32_t b3 = GetB64Char((B2(ulTmp) << 2 >> 2) & 0x3F);
+		*((unsigned*)p64) = b0 | b1 << 8 | b2 << 16 | b3 << 24;
+		len += 4;
+		p64 += 4;
+		psrc += 3;
+	}
+
+	// 处理最后余下的不足3字节的饿数据
+	if (i < src_len)
+	{
+		ptrdiff_t rest = src_len - i;
+		unsigned long ulTmp = 0;
+		for (int32_t j = 0; j < rest; ++j)
+			*(((unsigned char*)&ulTmp) + j) = *psrc++;
+
+		p64[0] = GetB64Char((B0(ulTmp) >> 2) & 0x3F);
+		p64[1] = GetB64Char((B0(ulTmp) << 6 >> 2 | B1(ulTmp) >> 4) & 0x3F);
+		p64[2] = rest > 1 ? GetB64Char((B1(ulTmp) << 4 >> 2 | B2(ulTmp) >> 6) & 0x3F) : '=';
+		p64[3] = rest > 2 ? GetB64Char((B2(ulTmp) << 2 >> 2) & 0x3F) : '=';
+		p64 += 4;
+		len += 4;
+	}
+
+	buf.resize(begin + len);
+	return len;
+}
+
+
+// 解码后的长度一般比原文少用占1/4的存储空间，请保证buf有足够的空间
+size_t Base64Decode(const void* base64code, size_t src_len, std::string& buf)
+{
+	size_t i, len = 0, begin = buf.length();
+	unsigned char* psrc = (unsigned char*)base64code;
+
+	buf.resize(begin + src_len);
+	char* pBuf = const_cast<char*>(buf.c_str()) + begin;
+
+	for (i = 0; i < src_len - 4 && src_len >= 4; i += 4)
+	{
+		uint32_t ulTmp = *(uint32_t*)psrc;
+
+		uint32_t b0 = (B64Indices[(uint8_t)B0(ulTmp)] << 2 | B64Indices[(uint8_t)B1(ulTmp)] << 2 >> 6) & 0xFF;
+		uint32_t b1 = (B64Indices[(uint8_t)B1(ulTmp)] << 4 | B64Indices[(uint8_t)B2(ulTmp)] << 2 >> 4) & 0xFF;
+		uint32_t b2 = (B64Indices[(uint8_t)B2(ulTmp)] << 6 | B64Indices[(uint8_t)B3(ulTmp)] << 2 >> 2) & 0xFF;
+
+		*((uint32_t*)pBuf) = b0 | b1 << 8 | b2 << 16;
+		psrc += 4;
+		pBuf += 3;
+		len += 3;
+	}
+
+	// 处理最后余下的不足4字节的饿数据
+	if (i < src_len)
+	{
+		ptrdiff_t rest = src_len - i;
+		unsigned long ulTmp = 0;
+		for (int32_t j = 0; j < rest; ++j)
+			*(((uint8_t*)&ulTmp) + j) = *psrc++;
+
+		uint32_t b0 = (B64Indices[(uint8_t)B0(ulTmp)] << 2 | B64Indices[(uint8_t)B1(ulTmp)] << 2 >> 6) & 0xFF;
+		*pBuf++ = b0;
+		len ++;
+
+		if ('=' != B1(ulTmp) && '=' != B2(ulTmp))
+		{
+			uint32_t b1 = (B64Indices[(uint8_t)B1(ulTmp)] << 4 | B64Indices[(uint8_t)B2(ulTmp)] << 2 >> 4) & 0xFF;
+			*pBuf++ = b1;
+			len ++;
+		}
+
+		if ('=' != B2(ulTmp) && '=' != B3(ulTmp))
+		{
+			uint32_t b2 = (B64Indices[(uint8_t)B2(ulTmp)] << 6 | B64Indices[(uint8_t)B3(ulTmp)] << 2 >> 2) & 0xFF;
+			*pBuf++ = b2;
+			len ++;
+		}
+	}
+
+	buf.resize(begin + len);
+	return len;
+}
+
+size_t urlDecode(char* str, size_t leng)
+{
+	if (!str)
+		return 0;
+
+	if (leng == -1)
+		leng = strlen(str);
+	if (leng == 0)
+		return 0;
+
+	uint8_t ch1, ch2;
+	char* read = str, *write = str, ch;
+	while (read - str < leng)
+	{
+		ch = *read++;
+		if (ch == '+')
+		{
+			*write ++ = ' ';
+		}
+		else if (ch == '%')
+		{
+			if (read[0] >= '0' && read[0] <= '9')
+				ch1 = (uint8_t)(read[0] - '0');
+			else if (read[0] >= 'a' && read[0] <= 'f')
+				ch1 = (uint8_t)(read[0] - 'a' + 10);
+			else if (read[0] >= 'A' && read[0] <= 'F')
+				ch1 = (uint8_t)(read[0] - 'A' + 10);
+			else
+			{
+				*write++ = '%';
+				continue;
+			}
+
+			if (read[1] >= '0' && read[1] <= '9')
+				ch2 = (uint8_t)(read[1] - '0');
+			else if (read[1] >= 'a' && read[1] <= 'f')
+				ch2 = (uint8_t)(read[1] - 'a' + 10);
+			else if (read[1] >= 'A' && read[1] <= 'F')
+				ch2 = (uint8_t)(read[1] - 'A' + 10);
+			else
+			{
+				*write++ = '%';
+				continue;
+			}
+
+			read += 2;
+			*write++ = ((ch1 & 0xF) << 4) | (ch2 & 0xF);
+		}
+		else
+		{
+			*write++ = ch;
+		}
+	}
+
+	*write = 0;
+	return write - str;
+}
+
+static char url_codes[256][4] = { 0 };
+static void init_urlcodes()
+{
+	if (url_codes['%'][0] == 0)
+	{
+		//第一次，所以需要初始化
+		url_codes['%'][3] = 1;
+		url_codes['&'][3] = 1;
+		url_codes[' '][3] = 1;
+		url_codes['='][3] = 1;
+		url_codes['/'][3] = 1;
+		url_codes['#'][3] = 1;
+		url_codes['+'][3] = 1;
+		url_codes['\\'][3] = 1;
+		url_codes[':'][3] = 1;
+		url_codes[';'][3] = 1;
+		url_codes['/'][3] = 1;
+
+		for (uint32_t i = 1; i < 256; ++i)
+		{
+			uint8_t* p = (uint8_t*)url_codes[i];
+			p[0] = '%';
+
+			p[1] = i >> 4;
+			if (p[1] > 9)
+				p[1] = p[1] - 10 + 'a';
+			else
+				p[1] += '0';
+
+			p[2] = i & 0xF;
+			if (p[2] > 9)
+				p[2] = p[2] - 10 + 'a';
+			else
+				p[2] += '0';
+		}
+	}
+}
+
+void urlEncode(const char* str, uint32_t leng, std::string& outbuf)
+{
+	init_urlcodes();
+
+	char chars[3];
+	uint8_t* pstr = (uint8_t*)str;
+	for (uint32_t i = 0, l; i < leng; )
+	{
+		uint8_t ch = pstr[i];
+		if (!(ch & 0x80))
+		{
+			//1 ascii
+			outbuf.append(url_codes[ch], 3);
+			++ i;
+		}
+		else
+		{
+			if ((ch & 0xE0) == 0xC0)
+				l = 2;
+			else if ((ch & 0xF0) == 0xE0)
+				l = 3;
+			else if ((ch & 0xF8) == 0xF0)
+				l = 4;
+			else if ((ch & 0xFC) == 0xF8)
+				l = 5;
+			else
+				l = 6;
+
+			while (l -- > 0)
+			{
+				const char* src = (const char*)url_codes[pstr[i ++]];
+				outbuf.append(src, 3);
+			}
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+template <typename T> inline T UTF82SinleLen(T pBuffer)
+{
+	uint32_t hiChar = pBuffer[0];
+	if (!(hiChar & 0x80))
+		pBuffer ++;
+	else if ((hiChar & 0xE0) == 0xC0)
+		pBuffer += 2;
+	else if ((hiChar & 0xF0) == 0xE0)
+		pBuffer += 3;
+	else if ((hiChar & 0xF8) == 0xF0)
+		pBuffer += 4;
+	else if ((hiChar & 0xFC) == 0xF8)
+		pBuffer += 5;
+	else
+		pBuffer += 6;
+
+	return pBuffer;
+}
+template <typename T> inline T UTF82UnicodeOne(T pBuffer, uint32_t& unicode)
+{
+	uint32_t ret;
+	uint8_t hiChar = pBuffer[0];
+	if (!(hiChar & 0x80))
+	{
+		unicode = hiChar;
+		return pBuffer + 1;
+	}
+
+	if ((hiChar & 0xE0) == 0xC0)
+	{
+		//2 bit count
+		ret = hiChar & 0x1F;
+		ret = (ret << 6) | (pBuffer[1] & 0x3F);
+		pBuffer += 2;
+	}
+	else if ((hiChar & 0xF0) == 0xE0)
+	{
+		//3 bit count
+		ret = hiChar & 0xF;
+		ret = (ret << 6) | (pBuffer[1] & 0x3F);
+		ret = (ret << 6) | (pBuffer[2] & 0x3F);
+		pBuffer += 3;
+	}
+	else if ((hiChar & 0xF8) == 0xF0)
+	{
+		//4 bit count
+		ret = hiChar & 0x7;
+		ret = (ret << 6) | (pBuffer[1] & 0x3F);
+		ret = (ret << 6) | (pBuffer[2] & 0x3F);
+		ret = (ret << 6) | (pBuffer[3] & 0x3F);
+		pBuffer += 4;
+	}
+	else if ((hiChar & 0xFC) == 0xF8)
+	{
+		//5 bit count
+		ret = hiChar & 0x3;
+		ret = (ret << 6) | (pBuffer[1] & 0x3F);
+		ret = (ret << 6) | (pBuffer[2] & 0x3F);
+		ret = (ret << 6) | (pBuffer[3] & 0x3F);
+		ret = (ret << 6) | (pBuffer[4] & 0x3F);
+		pBuffer += 5;
+	}
+	else
+	{
+		//6 bit count
+		ret = hiChar & 0x1;
+		ret = (ret << 6) | (pBuffer[1] & 0x3F);
+		ret = (ret << 6) | (pBuffer[2] & 0x3F);
+		ret = (ret << 6) | (pBuffer[3] & 0x3F);
+		ret = (ret << 6) | (pBuffer[4] & 0x3F);
+		ret = (ret << 6) | (pBuffer[5] & 0x3F);
+		pBuffer += 6;
+	}
+
+	unicode = ret;
+	return pBuffer;
+}
+
+template <typename T> uint32_t UnicodeOne2UTF8(const uint32_t code, T p)
+{
+	//第二遍输出
+	if (code < 0xC0)
+	{
+		*p ++ = (char)code;
+		return 1;
+	}
+	if (code < 0x800)
+	{
+		p[0] = 0xc0 | (code >> 6);
+		p[1] = 0x80 | (code & 0x3f);
+		return 2;
+	}
+	if (code < 0x10000)
+	{
+		p[0] = 0xe0 | (code >> 12);
+		p[1] = 0x80 | ((code >> 6) & 0x3f);
+		p[2] = 0x80 | (code & 0x3f);
+		return 3;
+	}
+	if (code < 0x200000)
+	{
+		p[0] = 0xf0 | (code >> 18);
+		p[1] = 0x80 | ((code >> 12) & 0x3f);
+		p[2] = 0x80 | ((code >> 6) & 0x3f);
+		p[3] = 0x80 | (code & 0x3f);
+		return 4;
+	}
+	if (code < 0x4000000)
+	{
+		p[0] = 0xf8 | (code >> 24);
+		p[1] = 0x80 | ((code >> 18) & 0x3f);
+		p[2] = 0x80 | ((code >> 12) & 0x3f);
+		p[3] = 0x80 | ((code >> 6) & 0x3f);
+		p[4] = 0x80 | (code & 0x3f);
+		return 5;
+	}
+
+	p[0] = 0xfc | (code >> 30);
+	p[1] = 0x80 | ((code >> 24) & 0x3f);
+	p[2] = 0x80 | ((code >> 18) & 0x3f);
+	p[3] = 0x80 | ((code >> 12) & 0x3f);
+	p[4] = 0x80 | ((code >> 6) & 0x3f);
+	p[5] = 0x80 | (code & 0x3f);
+	return 6;
+}
+
+uint32_t Unicode2GBK(uint32_t uni, char* gbk)
+{
+	if (uni <= 0x7F)
+	{
+		gbk[0] = uni;
+		return 1;
+	}
+	else if (uni == 0x20AC)
+	{
+		gbk[0] = 0x80;
+		return 1;
+	}
+	else
+	{
+		uint16_t ss = unicode2gbkTable[uni - 128];
+		gbk[0] = ss >> 8;
+		gbk[1] = ss & 0xFF;
+	}
+	return 2;
+}
+
+uint32_t GBK2UTF8(const char* gbk, uint32_t leng, std::string& utf8)
+{
+	char tmp[8];
+	uint32_t outLeng = utf8.length();
+	utf8.reserve(outLeng + leng + (leng >> 1));
+
+	for (uint32_t i = 0, uni; i < leng; ++ i)
+	{
+		uint8_t ch = gbk[i];
+		if (ch <= 0x7F)
+		{
+			utf8 += ch;
+		}
+		else if (ch == 0x80)
+		{
+			tmp[0] = 0xe0 | (0x20AC >> 12);
+			tmp[1] = 0x80 | ((0x20AC >> 6) & 0x3f);
+			tmp[2] = 0x80 | (0x20AC & 0x3f);
+			utf8.append(tmp, 3);
+			++ i;
+		}
+		else
+		{
+			++ i;
+			ch -= 0x81;
+			if (ch < sizeof(gbk2unicodeTables) / sizeof(gbk2unicodeTables[0]))
+			{
+				const uint16_t* pTable = gbk2unicodeTables[ch];
+				ch = gbk[i];
+				if (ch < 255)
+					uni = pTable[ch - 0x40];
+				else
+					uni = 0;
+
+				if (uni < 0xC0)
+				{
+					utf8 += uni;
+				}
+				else if (uni < 0x800)
+				{
+					tmp[0] = 0xc0 | (uni >> 6);
+					tmp[1] = 0x80 | (uni & 0x3f);
+					utf8.append(tmp, 2);
+				}
+				else if (uni < 0x10000)
+				{
+					tmp[0] = 0xe0 | (uni >> 12);
+					tmp[1] = 0x80 | ((uni >> 6) & 0x3f);
+					tmp[2] = 0x80 | (uni & 0x3f);
+					utf8.append(tmp, 3);
+				}
+				else if (uni < 0x200000)
+				{
+					tmp[0] = 0xf0 | (uni >> 18);
+					tmp[1] = 0x80 | ((uni >> 12) & 0x3f);
+					tmp[2] = 0x80 | ((uni >> 6) & 0x3f);
+					tmp[3] = 0x80 | (uni & 0x3f);
+					utf8.append(tmp, 4);
+				}
+			}
+		}
+	}
+
+	outLeng = utf8.size() - outLeng;
+
+	return outLeng;
+}
+
+uint32_t UTF82GBK(const char* utf8, uint32_t leng, std::string& gbk)
+{
+	uint32_t uni, outLeng = gbk.size();
+	gbk.reserve(outLeng + leng);
+
+
+	outLeng = gbk.size() - outLeng;
+	return outLeng;
+}
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -710,27 +1212,6 @@ int luaopen_libstrext(lua_State* L)
 	luaext_string(L);
 	luaext_table(L);
 	luaext_utf8str(L);
-
-	lua_settop(L, top);
-
-	// 缓存一些函数方便C来调用
-	lua_getglobal(L, "require");
-	lua_pushliteral(L, "ffi");
-	lua_pcall(L, 1, 1, 0);
-
-	lua_getfield(L, -1, "new");
-	lua_rawseti(L, LUA_REGISTRYINDEX, kLuaRegVal_FFINew);
-
-	lua_getfield(L, -1, "sizeof");
-	lua_rawseti(L, LUA_REGISTRYINDEX, kLuaRegVal_FFISizeof);
-
-	lua_getglobal(L, "tostring");
-	lua_rawseti(L, LUA_REGISTRYINDEX, kLuaRegVal_tostring);
-
-	lua_getglobal(L, "ngx");
-	lua_getfield(L, -1, "re");
-	lua_getfield(L, -1, "match");
-	lua_rawseti(L, LUA_REGISTRYINDEX, kLuaRegVal_ngx_re_match);
 
 	lua_settop(L, top);
 

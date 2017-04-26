@@ -21,5 +21,8 @@
     <ClCompile Include="strext.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="io.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
