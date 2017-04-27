@@ -31,90 +31,6 @@ enum StringHtmlEntFlags {
 };
 
 //////////////////////////////////////////////////////////////////////////
-static int lua_string_addbuf(luaL_Buffer* buf, const char* str, size_t len)
-{
-	int addBuf = 0;
-	size_t lenleft = len, copy;
-	while(lenleft > 0)
-	{
-		copy = std::min(lenleft, (size_t)(LUAL_BUFFERSIZE - (buf->p - buf->buffer)));
-		if (!copy)
-		{
-			addBuf ++;
-			luaL_prepbuffer(buf);
-			copy = std::min(lenleft, (size_t)LUAL_BUFFERSIZE);
-		}
-
-		memcpy(buf->p, str, copy);
-		lenleft -= copy;
-		buf->p += copy;
-		str += copy;
-	}
-
-	return addBuf;
-}
-
-static uint32_t cdataValueIsInt64(const uint8_t* ptr, size_t len, size_t* lenout, uint32_t minDigits = 1)
-{
-	size_t i = 0;
-	uint32_t postfix = 2, backc = 0;
-	uint8_t ch, chExpet = 0, digits = 0;	
-
-	if (ptr[0] == '-')
-	{
-		postfix = 3;
-		i ++;
-	}
-
-	for (; i < len; ++ i)
-	{
-		ch = integer64_valid_bits[ptr[i]];
-		if (ch == 0xFF)
-			return 0;
-
-		if (ch != chExpet)
-		{
-			if (chExpet)
-				return 0;
-
-			switch (ch)
-			{
-			case 1:
-				postfix = 3;	// ULL
-			case 2:
-				chExpet = 2;	// LL
-				break;
-			case 3:
-				postfix = 3;	// ull
-			case 4:
-				chExpet = 2;	// ll
-				break;
-			default:
-				return 0;
-			}
-
-			backc = postfix;
-		}
-		else if (chExpet)
-		{
-			if (backc <= 1)
-				return 0;
-			backc --;
-		}
-		else
-			digits ++;
-	}
-
-	if (digits < minDigits)
-		return 0;
-
-	*lenout = len - postfix;
-
-	// 返回3表示为unsigned int64，2表示signed int64
-	return postfix;
-}
-
-//////////////////////////////////////////////////////////////////////////
 
 struct BMString
 {
@@ -2249,6 +2165,7 @@ static int lua_string_re2match(lua_State* L)
 	return 0;
 }
 #endif
+
 
 //////////////////////////////////////////////////////////////////////////
 static void luaext_string(lua_State *L)

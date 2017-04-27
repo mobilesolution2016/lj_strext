@@ -25,4 +25,21 @@
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="crtopt.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="json.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="lua_string.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="lua_table.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="lua_utf8str.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+  </ItemGroup>
 </Project>

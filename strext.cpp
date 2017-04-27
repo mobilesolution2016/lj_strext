@@ -1091,46 +1091,44 @@ template <typename T> uint32_t UnicodeOne2UTF8(const uint32_t code, T p)
 	return 6;
 }
 
-uint32_t Unicode2GBK(uint32_t uni, char* gbk)
+size_t Unicode2GBK(uint32_t uni, char* gbk)
 {
 	if (uni <= 0x7F)
 	{
 		gbk[0] = uni;
 		return 1;
 	}
-	else if (uni == 0x20AC)
+	
+	if (uni == 0x20AC)
 	{
 		gbk[0] = 0x80;
 		return 1;
 	}
-	else
-	{
-		uint16_t ss = unicode2gbkTable[uni - 128];
-		gbk[0] = ss >> 8;
-		gbk[1] = ss & 0xFF;
-	}
+
+	uint16_t ss = unicode2gbkTable[uni - 128];
+	gbk[0] = ss >> 8;
+	gbk[1] = ss & 0xFF;
+	
 	return 2;
 }
 
-uint32_t GBK2UTF8(const char* gbk, uint32_t leng, std::string& utf8)
+size_t GBK2UTF8(const char* gbk, size_t leng, char* utf8output)
 {
-	char tmp[8];
-	uint32_t outLeng = utf8.length();
-	utf8.reserve(outLeng + leng + (leng >> 1));
+	uint8_t *utf8 = (uint8_t*)utf8output;
 
-	for (uint32_t i = 0, uni; i < leng; ++ i)
+	for (size_t i = 0, uni; i < leng; ++ i)
 	{
 		uint8_t ch = gbk[i];
 		if (ch <= 0x7F)
 		{
-			utf8 += ch;
+			*utf8 ++ = ch;
 		}
 		else if (ch == 0x80)
 		{
-			tmp[0] = 0xe0 | (0x20AC >> 12);
-			tmp[1] = 0x80 | ((0x20AC >> 6) & 0x3f);
-			tmp[2] = 0x80 | (0x20AC & 0x3f);
-			utf8.append(tmp, 3);
+			utf8[0] = 0xe0 | (0x20AC >> 12);
+			utf8[1] = 0x80 | ((0x20AC >> 6) & 0x3f);
+			utf8[2] = 0x80 | (0x20AC & 0x3f);
+			utf8 += 3;
 			++ i;
 		}
 		else
@@ -1148,50 +1146,100 @@ uint32_t GBK2UTF8(const char* gbk, uint32_t leng, std::string& utf8)
 
 				if (uni < 0xC0)
 				{
-					utf8 += uni;
+					*utf8 ++ = uni;
 				}
 				else if (uni < 0x800)
 				{
-					tmp[0] = 0xc0 | (uni >> 6);
-					tmp[1] = 0x80 | (uni & 0x3f);
-					utf8.append(tmp, 2);
+					utf8[0] = 0xc0 | (uni >> 6);
+					utf8[1] = 0x80 | (uni & 0x3f);
+					utf8 += 2;
 				}
 				else if (uni < 0x10000)
 				{
-					tmp[0] = 0xe0 | (uni >> 12);
-					tmp[1] = 0x80 | ((uni >> 6) & 0x3f);
-					tmp[2] = 0x80 | (uni & 0x3f);
-					utf8.append(tmp, 3);
+					utf8[0] = 0xe0 | (uni >> 12);
+					utf8[1] = 0x80 | ((uni >> 6) & 0x3f);
+					utf8[2] = 0x80 | (uni & 0x3f);
+					utf8 += 3;
 				}
 				else if (uni < 0x200000)
 				{
-					tmp[0] = 0xf0 | (uni >> 18);
-					tmp[1] = 0x80 | ((uni >> 12) & 0x3f);
-					tmp[2] = 0x80 | ((uni >> 6) & 0x3f);
-					tmp[3] = 0x80 | (uni & 0x3f);
-					utf8.append(tmp, 4);
+					utf8[0] = 0xf0 | (uni >> 18);
+					utf8[1] = 0x80 | ((uni >> 12) & 0x3f);
+					utf8[2] = 0x80 | ((uni >> 6) & 0x3f);
+					utf8[3] = 0x80 | (uni & 0x3f);
+					utf8 += 4;
 				}
 			}
 		}
 	}
 
-	outLeng = utf8.size() - outLeng;
-
-	return outLeng;
+	return (char*)utf8 - utf8output;
 }
 
-uint32_t UTF82GBK(const char* utf8, uint32_t leng, std::string& gbk)
+size_t UTF82GBK(const char* utf8, size_t leng, char* gbkoutput)
 {
-	uint32_t uni, outLeng = gbk.size();
-	gbk.reserve(outLeng + leng);
+	uint32_t unicode;
+	char* gbk = gbkoutput;
+	const char* src = utf8;
 
+	while(src < utf8 + leng)
+	{
+		src = UTF82UnicodeOne(src, unicode);
+		gbk += Unicode2GBK(unicode, gbk);
+	}
 
-	outLeng = gbk.size() - outLeng;
-	return outLeng;
+	return gbk - gbkoutput;
 }
 
 //////////////////////////////////////////////////////////////////////////
+static int lua_string_addbuf(luaL_Buffer* buf, const char* str, size_t len, bool toGbk = false)
+{
+	char gbk[640];
+	int addBuf = 0;
+	std::string gbkBuf;
+	size_t lenleft = len, copy, gbklen;
 
+	while (lenleft > 0)
+	{
+		copy = std::min(lenleft, (size_t)(LUAL_BUFFERSIZE - (buf->p - buf->buffer)));
+		if (!copy)
+		{
+			addBuf ++;
+			luaL_prepbuffer(buf);
+			copy = std::min(lenleft, (size_t)LUAL_BUFFERSIZE);
+		}
+
+		if (toGbk)
+		{
+			if (copy <= 640)
+			{				
+				gbklen = UTF82GBK(str, copy, gbk);
+				memcpy(buf->p, gbk, gbklen);
+			}
+			else
+			{				
+				gbkBuf.resize(len);
+
+				char* gbkbuf = const_cast<char*>(gbkBuf.data());
+				gbklen = UTF82GBK(str, copy, gbkbuf);
+				memcpy(buf->p, gbkbuf, gbklen);
+			}
+			buf->p += gbklen;
+		}
+		else
+		{
+			memcpy(buf->p, str, copy);
+			buf->p += copy;
+		}
+
+		lenleft -= copy;		
+		str += copy;
+	}
+
+	return addBuf;
+}
+
+//////////////////////////////////////////////////////////////////////////
 #include "crtopt.h"
 #include "json.h"
 #include "lua_utf8str.h"

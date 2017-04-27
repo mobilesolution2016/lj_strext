@@ -160,6 +160,13 @@
     <ClCompile Include="io.cpp" />
     <ClCompile Include="strext.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="crtopt.h" />
+    <ClInclude Include="json.h" />
+    <ClInclude Include="lua_string.h" />
+    <ClInclude Include="lua_table.h" />
+    <ClInclude Include="lua_utf8str.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

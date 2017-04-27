@@ -8,6 +8,7 @@
 #	include <Shlwapi.h>
 #	include <shellapi.h>
 #	include <stdint.h>
+#	define IO_API extern "C" __declspec(dllexport)
 #else
 #   include <sys/time.h>
 #   include <sys/types.h>
@@ -17,6 +18,7 @@
 #   include <unistd.h>
 #	include <dirent.h>
 #	include <errno.h>
+#	define IO_API extern "C" 
 #endif
 
 struct LocalDateTime
@@ -25,7 +27,7 @@ struct LocalDateTime
 	uint16_t	hour, minute, second, millisecond;
 };
 
-int deleteDirectory(const char* dir)
+IO_API int deleteDirectory(const char* dir)
 {
 #ifdef _WINDOWS
 	int len = strlen(dir) + 2;
@@ -102,7 +104,7 @@ int deleteDirectory(const char* dir)
 #endif
 }
 
-int deleteFile(const char* fname)
+IO_API int deleteFile(const char* fname)
 {
 #ifdef _WINDOWS
 	SetFileAttributesA(fname, FILE_ATTRIBUTE_ARCHIVE);
@@ -114,7 +116,7 @@ int deleteFile(const char* fname)
 #endif
 }
 
-bool getFileTime(const char* fname, LocalDateTime* create, LocalDateTime* update)
+IO_API bool getFileTime(const char* fname, LocalDateTime* create, LocalDateTime* update)
 {
 #ifdef _WINDOWS
 	HANDLE hFile = CreateFileA(fname, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
@@ -202,7 +204,7 @@ bool getFileTime(const char* fname, LocalDateTime* create, LocalDateTime* update
 	return false;
 }
 
-double getFileSize(const char* fname)
+IO_API double getFileSize(const char* fname)
 {
 #ifdef _WINDOWS
 	HANDLE hFile = CreateFileA(fname, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
@@ -265,7 +267,7 @@ bool fnamematch(const char* needle, const char* haystack)
 
 	return haystack[0] == '\0';
 }
-const char* readdirinfo(void* p, const char* filter)
+IO_API const char* readdirinfo(void* p, const char* filter)
 {
 	for (;;)
 	{
@@ -285,7 +287,7 @@ const char* readdirinfo(void* p, const char* filter)
 	return NULL;
 }
 
-unsigned getpathattrs(const char* path)
+IO_API unsigned getpathattrs(const char* path)
 {
 	struct stat buf;
 	if (stat(path, &buf) == -1)
@@ -311,21 +313,21 @@ unsigned getpathattrs(const char* path)
 	return r | (buf.st_mode & 0x1FF);
 }
 
-bool pathisfile(const char* path)
+IO_API bool pathisfile(const char* path)
 {
 	struct stat buf;
 	if (stat(path, &buf) != 0)
 		return 0;
 	return S_ISREG(buf.st_mode);
 }
-bool pathisdir(const char* path)
+IO_API bool pathisdir(const char* path)
 {
 	struct stat buf = { 0 };
 	if (stat(path, &buf) != 0)
 		return 0;
 	return S_ISDIR(buf.st_mode);
 }
-unsigned pathisexists(const char* path)
+IO_API unsigned pathisexists(const char* path)
 {
 	struct stat buf = { 0 };
 	if (stat(path, &buf) != 0)
@@ -337,7 +339,7 @@ unsigned pathisexists(const char* path)
 		return 2;
 	return 0;
 }
-bool createdir(const char* path, int mode)
+IO_API bool createdir(const char* path, int mode)
 {
 	struct stat buf = { 0 };
 	if (stat(path, &buf) == -1)
