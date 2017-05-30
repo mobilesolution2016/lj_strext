@@ -41,5 +41,8 @@
     <ClInclude Include="lua_utf8str.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="lua_regexp.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

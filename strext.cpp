@@ -24,11 +24,15 @@
 #include <boost/unordered_map.hpp>
 #define MAP_CLASS_NAME boost::unordered_map
 #define stricmp _stricmp
+#define strnicmp _strnicmp
 #else
 #include <unordered_map>
 #define MAP_CLASS_NAME std::unordered_map
 #define stricmp strcasecmp
+#define strnicmp strncasecmp
 #endif
+
+#include <boost/regex.hpp>
 
 enum LuaRegistryFixedValue {
 	kLuaRegVal_FFINew = -99990,
@@ -1245,6 +1249,9 @@ static int lua_string_addbuf(luaL_Buffer* buf, const char* str, size_t len, bool
 #include "lua_utf8str.h"
 #include "lua_string.h"
 #include "lua_table.h"
+#ifdef BOOST_RE_REGEX_HPP
+#include "lua_regexp.h"
+#endif
 
 #pragma comment(lib, "lua51")
 
@@ -1260,6 +1267,9 @@ int luaopen_libstrext(lua_State* L)
 	luaext_string(L);
 	luaext_table(L);
 	luaext_utf8str(L);
+#ifdef BOOST_RE_REGEX_HPP
+	luaext_RegExp(L);
+#endif
 
 	lua_settop(L, top);
 

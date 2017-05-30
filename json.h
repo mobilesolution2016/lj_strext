@@ -567,7 +567,7 @@ private:
 		}
 		else if (pReadPos[0] == '{')
 		{
-			pReadPos = parseReadNode(pReadPos + 1, JATObject);
+			pReadPos = parseReadNode(pReadPos + 1);
 		}
 		else
 		{
@@ -578,7 +578,7 @@ private:
 		return pReadPos;
 	}
 
-	char* parseReadNode(char* pReadPos, JSONAttrType kParentType)
+	char* parseReadNode(char* pReadPos)
 	{		
 		if (m_nOpens == MAX_PARSE_LEVEL)
 		{
@@ -586,7 +586,7 @@ private:
 			return 0;
 		}
 
-		m_opens[m_nOpens ++] = kParentType;
+		m_opens[m_nOpens ++] = JATObject;
 
 		SKIP_WHITES();
 
@@ -628,24 +628,24 @@ private:
 						}
 					}
 
-					if (pReadPos[eqSyms] == '[')
-					{
-						// Lua多行字符串
-						attr->kType = JATString;
+					//if (pReadPos[eqSyms] == '[')
+					//{
+					//	// Lua多行字符串
+					//	attr->kType = JATString;
 
-						pReadPos = parseFetchLuaString(pReadPos + eqSyms + 1, eqSyms - 1, attr->value);
+					//	pReadPos = parseFetchLuaString(pReadPos + eqSyms + 1, eqSyms - 1, attr->value);
 
-						onAddAttr(attr, 0);
-					}
-					else
-					{
+					//	onAddAttr(attr, 0);
+					//}
+					//else
+					//{
 						//处理数组
 						attr->kType = JATArray;
 
 						onAddAttr(attr, 0);
 
 						pReadPos = parseArray(pReadPos + 1);
-					}
+					//}
 
 					if (!pReadPos)
 						return 0;
@@ -657,7 +657,7 @@ private:
 
 					onAddAttr(attr, 0);
 
-					pReadPos = parseReadNode(pReadPos + 1, JATObject);
+					pReadPos = parseReadNode(pReadPos + 1);
 					if (!pReadPos)
 						return 0;
 				}
@@ -677,6 +677,30 @@ private:
 
 				cc ++;
 			}
+			else if (pReadPos[0] == '[')
+			{
+				// 一个新的数组
+				JSONAttribute* attr = getTmpAttr();
+				attr->kType = JATArray;
+
+				onAddAttr(attr, cc);
+
+				pReadPos = parseArray(pReadPos + 1);
+				if (!pReadPos)
+					return 0;
+			}
+			else if (pReadPos[0] == '{')
+			{
+				// 一个对象
+				JSONAttribute* attr = getTmpAttr();
+				attr->kType = JATObject;
+
+				onAddAttr(attr, cc);
+
+				pReadPos = parseReadNode(pReadPos + 1);
+				if (!pReadPos)
+					return 0;
+			}
 			else if (cc == 0 && pReadPos[0] == '}')
 			{
 				//空的大括号
@@ -691,7 +715,7 @@ private:
 			}
 			else
 			{
-				m_iErr = kErrorAttribute;
+				m_iErr = kErrorSymbol;
 				return 0;
 			}
 
@@ -970,7 +994,7 @@ private:
 				attr->kType = JATObject;
 
 				onAddAttr(attr, cc);
-				pReadPos = parseReadNode(pReadPos + 1, JATObject);
+				pReadPos = parseReadNode(pReadPos + 1);
 			}
 			else if (ch == '[')
 			{
@@ -979,7 +1003,7 @@ private:
 				attr->kType = JATArray;
 
 				onAddAttr(attr, cc);
-				pReadPos = parseReadNode(pReadPos + 1, JATArray);
+				pReadPos = parseArray(pReadPos + 1);
 			}
 			else if (ch == ',')
 			{

@@ -150,11 +150,30 @@ struct BMString
 
 
 //////////////////////////////////////////////////////////////////////////
+static int lua_string_at(lua_State* L)
+{
+	size_t len;
+	int top = lua_gettop(L), pos, i, cc = 0;
+	const char* s = luaL_checklstring(L, 1, &len);
+
+	for (i = 2; i <= top; ++ i)
+	{
+		pos = lua_tointeger(L, 2);
+		if (pos >= 1 && pos <= len)
+		{
+			++ cc;
+			lua_pushlstring(L, s + pos - 1, 1);
+		}
+	}
+	return cc;
+}
+
 // 按参数1字符串按照参数2字符串中出现的每一个字符进行切分，切分时将根据参数3中设置的标志进行相应的处理，如果参数4存在且为true则切分的结果会以多返回值返回，否则将以table返回切分的结果
 // 即使参数1字符串完全不含有参数2字符串中的任何一个字符，也会进行一次切分，只是返回为整个参数1字符串
 static int lua_string_split(lua_State* L)
 {
-	bool exists = false;
+	int callback = 0;
+	bool exists = false;	
 	uint8_t checker[256] = { 0 }, ch;
 	size_t byLen = 0, srcLen = 0, start = 0;
 	uint32_t nFlags = 0, maxSplits = 0, cc = 0;
@@ -184,6 +203,11 @@ static int lua_string_split(lua_State* L)
 		// is table then use it directly
 		cc = lua_objlen(L, tblVal);
 		exists = true;
+	}
+	else if (retAs == LUA_TFUNCTION)
+	{
+		callback = tblVal;
+		retAs = LUA_TNUMBER;
 	}
 	else
 	{
@@ -233,10 +257,23 @@ static int lua_string_split(lua_State* L)
 
 		if (start < endpos)
 		{
-_lastseg:
-			// push result
-			if (tblVal)
+		_lastseg:
+			if (callback)
 			{
+				// callback
+				lua_pushvalue(L, tblVal);
+				lua_pushinteger(L, cc + 1);
+				lua_pushlstring(L, (const char*)src + start, endpos - start);
+				if (lua_pcall(L, 2, 1, 0))
+					return 0;
+				if (lua_isboolean(L, -1) && lua_toboolean(L, -1))
+					break;
+
+				lua_settop(L, top);
+			}
+			else if (tblVal)
+			{
+				// push result
 				lua_pushlstring(L, (const char*)src + start, endpos - start);
 				if (nFlags & kSplitAsKey)
 				{
@@ -289,6 +326,12 @@ _lastseg:
 			}
 		}
 
+		return 1;
+	}
+
+	if (callback)
+	{
+		lua_pushinteger(L, cc);
 		return 1;
 	}
 
@@ -2113,6 +2156,159 @@ static int lua_string_hexdump(lua_State* L)
 }
 
 //////////////////////////////////////////////////////////////////////////
+static inline bool _isTagEnd(const uint8_t* code, const uint8_t* codeEnd, const uint8_t** outPtr)
+{
+	if (code[0] == '>')
+	{
+		*outPtr = code + 1;
+		return true;
+	}
+	if (code[0] == '/')
+	{
+		code ++;
+		while (code < codeEnd)
+		{
+			if (code[0] == '>')
+			{
+				*outPtr = code + 1;
+				return true;
+			}
+			else if (code[0] > 32)
+				break;
+			code ++;
+		}
+	}
+	return false;
+}
+static inline bool _isCommentEnd(const uint8_t* code, const uint8_t* codeEnd, const uint8_t** outPtr)
+{
+	if (code[0] == '-' && code[1] == '-' && code[2] == '>')
+	{
+		*outPtr = code + 4;
+		return true;
+	}
+	return false;
+}
+
+static bool _findEnd(const uint8_t* code, const uint8_t* codeEnd, const uint8_t** outPtr)
+{
+	uint8_t quoteIn = 0;
+	while (code < codeEnd)
+	{
+		if (quoteIn)
+		{
+			if (code[0] == quoteIn)
+				quoteIn = 0;
+			else if (code[0] == '\\')
+				code ++;
+		}
+		else if (code[0] == '\'' || code[0] == '"')
+		{
+			quoteIn = code[0];
+		}
+		else if (_isTagEnd(code, codeEnd, outPtr))
+		{
+
+			return true;
+		}
+
+		code ++;
+	}
+
+	return false;
+}
+static bool _findCommentEnd(const uint8_t* code, const uint8_t* codeEnd, const uint8_t** outPtr)
+{
+	uint8_t quoteIn = 0;
+	while (code < codeEnd)
+	{
+		if (quoteIn)
+		{
+			if (code[0] == quoteIn)
+				quoteIn = 0;
+			else if (code[0] == '\\')
+				code ++;
+		}
+		else if (code[0] == '\'' || code[0] == '"')
+		{
+			quoteIn = code[0];
+		}
+		else if (_isCommentEnd(code, codeEnd, outPtr))
+		{
+			return true;
+		}
+
+		code ++;
+	}
+
+	return false;
+}
+
+static int lua_string_removemarkups(lua_State* L)
+{
+	size_t len = 0;
+	std::string strResult;
+	const uint8_t* code = (const uint8_t*)luaL_checklstring(L, 1, &len);
+	const uint8_t* codeEnd = code + len, *testPtr;
+	uint8_t flag = 0;
+
+	strResult.reserve(len / 2);
+	while (code < codeEnd)
+	{
+		if (code[0] == '<')
+		{
+			testPtr = code + 1;
+			if (testPtr[0] == '!' && testPtr[1] == '-' && testPtr[2] == '-')
+			{
+				// 注释
+				if (_findCommentEnd(testPtr + 3, codeEnd, &code))
+					continue;
+			}
+			else
+			{
+				while (testPtr < codeEnd)
+				{
+					flag = json_value_char_tbl[testPtr[0]];
+					if (flag) break;
+					testPtr ++;
+				}
+
+				if (testPtr[0] == '/' || (flag >= 4 && flag <= 7))
+				{
+					// 标签开始，继续向后测试
+					testPtr ++;
+					while (testPtr < codeEnd)
+					{
+						flag = json_value_char_tbl[testPtr[0]];
+						if (flag < 4 || flag > 7)
+							break;
+						testPtr ++;
+					}
+
+					if (flag == 0)
+					{
+						// 找到结束位置						
+						if (_findEnd(testPtr, codeEnd, &code))
+							continue;
+					}
+					else if (_isTagEnd(testPtr, codeEnd, &code))
+					{
+						// 这个标签结束了
+						continue;
+					}
+				}
+			}
+		}
+
+		strResult += code[0];
+		code ++;
+	}
+
+	lua_pushlstring(L, strResult.c_str(), strResult.length());
+	return 1;
+}
+
+//////////////////////////////////////////////////////////////////////////
 #ifdef USE_RE2
 typedef MAP_CLASS_NAME<std::string, re2::RE2*> RE2PatsMap;
 static RE2PatsMap re2pats;
@@ -2171,6 +2367,9 @@ static int lua_string_re2match(lua_State* L)
 static void luaext_string(lua_State *L)
 {
 	const luaL_Reg procs[] = {
+		// 一次取多个位置的字符转字符串
+		{ "at", &lua_string_at },
+
 		// 字符串切分
 		{ "split", &lua_string_split },
 		// ID数组切分
@@ -2230,6 +2429,9 @@ static void luaext_string(lua_State *L)
 
 		// Hex转换
 		{ "hexdump", &lua_string_hexdump },
+
+		// 移除MarkupLanguage式的标签代码
+		{ "removemarkups", &lua_string_removemarkups },
 
 		{ NULL, NULL }
 	};
